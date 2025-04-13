@@ -1,2 +1,5 @@
-# authmatter-node
-SSO IdP peering with OIDC
+# AuthMatter (Nodejs edition)
+
+SSO IdP peering with OIDC.
+
+
