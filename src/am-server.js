@@ -10,6 +10,27 @@ import { Provider } from 'oidc-provider';
 
 
 
+const DevMockDatabase = {
+    users: [
+        {
+            uid: 0,
+            username: 'root@localhost',
+            display_name: 'AuthMatterRootUser',
+            user_roles: ['staff', 'wheel'],
+            home: 'localhost',
+            org_domain: 'localhost'
+        }
+    ],
+};
+
+const SystemReservedRuntimeConstants = {
+    roles: [
+        'staff', 'wheel'
+    ]
+};
+
+
+
 
 
 

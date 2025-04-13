@@ -145,6 +145,14 @@ If not found, try reverse proxying to an upstream hostname `wellknown_upstream`.
 
 
 
+## Peer Verification
+
+A peer at `id.example.com` may claim to be the AuthMatter instance for `example.com` domain.
+We will support several ways to set up proof.
+
+- RFC 8615: Point `idp_site` to `id.example.com` in `authmatter.json`.
+- DNS: Have a TXT record `AuthMatterSite=id.example.com` at `example.com`.
+
 
 
 
