@@ -124,12 +124,7 @@ Response:
     "cmd": "user.whoami",
     "error": 0,
     "stdout": {
-        "uid": 1234,
-        "username": "john@example.com",
-        "display_name": "John Appleseed",
-        "user_roles": [ "staff", "admin", "is_domestic" ],
-        "home": "am.example.com",
-        "org_domain": "example.com"
+        /* ... */
     },
     "stderr": null
 }
@@ -145,13 +140,81 @@ If not found, try reverse proxying to an upstream hostname `wellknown_upstream`.
 
 
 
+## Roles and Operations
+
+### Admin
+- Add and delete users
+- Grant and revoke admin status to users
+- Add and delete credentials for users
+
+### AdminVirtualBot
+- Initiate peer eligibility verification
+
+### User
+- Establish and revoke sessions
+- 
+
+### OIDC Consumers
+- Initiate SSO challenges
+- 
+
+
+
+
 ## Peer Verification
 
 A peer at `id.example.com` may claim to be the AuthMatter instance for `example.com` domain.
 We will support several ways to set up proof.
 
-- RFC 8615: Point `idp_site` to `id.example.com` in `authmatter.json`.
-- DNS: Have a TXT record `AuthMatterSite=id.example.com` at `example.com`.
+- RFC 8615: Point `idp_site` to `https://id.example.com` in `authmatter.json`.
+- DNS: Have a TXT record `AuthMatterSite=https://id.example.com` at `example.com`.
+
+
+
+
+## Database Interactions
+
+### Data Models
+
+#### User
+
+```jsonc
+{
+    "uid": 1234, // SQL autoincremental
+    "username_short": "john", // Really in database
+    "username": "john@example.com", // OpenID email, computed 
+    "display_name": "John Appleseed",
+    "user_roles": [ "staff", "admin" ], // Fixed range
+    "is_domestic": true, // false=romaing
+    "is_frozen": false,
+    "home": "am.example.com", // Peer site
+    "org_domain": "example.com", // Affiliation
+    "oidc_data_upstream": "...",
+        // Put misc stuff under this carpet
+    "oidc_data_local": "..."
+}
+```
+
+#### AbstractCredential
+
+```jsonc
+{
+    "_id": 5678, // SQL autoincremental
+    "uid": 1234, // Ref `User`
+    "summary": "Authenticator on my BlackBerry",
+    "type": "totp", // Fixed range
+    "data": "totp://..." // Serialized form
+}
+```
+
+### Tables
+
+| Table Name      | Description                          |
+| --------------- | ------------------------------------ |
+| USERS_MAIN      | `User` objects, autoincremental uid  |
+| REL_USERS_ROLES | Relation table for `User` and `ROLE` |
+| CREDENTIALS     | `AbstractCredential` objects         |
+
 
 
 

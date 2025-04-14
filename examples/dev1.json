@@ -1,4 +1,7 @@
 {
     "site_hostname": "http://localhost:8080",
-    "org_domain": "localhost"
+    "org_domain": "localhost",
+    "is_public_oidc_provider": true,
+    "peers_limit": 100,
+    "per_peer_roaming_limit": 100
 }

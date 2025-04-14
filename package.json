@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "express": "^5.1.0",
     "oidc-provider": "https://github.com/panva/node-oidc-provider",
     "pentex-std-lib": "^1.0.15"
   },
