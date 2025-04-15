@@ -1,8 +1,8 @@
 {
-    "site_hostname": "http://localhost:8080",
-    "org_domain": "localhost",
-    "is_public_oidc_provider": true,
-    "nonfavored_peers_limit": 100,
-    "per_peer_users_limit_nonfavored": 100,
-    "per_peer_users_limit_favored": 1000
+  "site_hostname": "http://localhost:8080",
+  "org_domain": "localhost",
+  "is_public_oidc_provider": true,
+  "public_peers_limit": 100,
+  "per_peer_users_limit_public": 100,
+  "per_peer_users_limit_favored": 1000
 }

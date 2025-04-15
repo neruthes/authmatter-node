@@ -1,0 +1,22 @@
+### How to use this example: node src/am-server.js examples/dev1.json
+### TODO: Directly support TOML parsing in 'am-server.js'?
+
+
+
+# Site base URL
+site_hostname = "http://localhost:8080"
+
+# Which domain does this instance represent?
+org_domain = "localhost"
+
+# Open to anonymous clients?
+is_public_oidc_provider = true
+
+# Limit for peers interacting on-demand without whitelisting
+public_peers_limit = 100
+
+# Per-peer users limit
+per_peer_users_limit_public = 100       # For public peers
+per_peer_users_limit_favored = 1000     # For whitelisted peers
+
+
