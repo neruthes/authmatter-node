@@ -247,7 +247,7 @@ express_gateway.post('/api/webcmd', function (req, res) {
         };
         if (!token_result.err) {
             // Is valid token!
-            res.writeHead(200, default_json_res_headers);
+            // res.writeHead(200, default_json_res_headers); // Commands do this?
             AcceptIncomingRequest(parsed_req_body.cmd, parsed_req_body.argv, safe_env, req, res);
         } else {
             res.writeHead(200, default_json_res_headers);

@@ -2,6 +2,7 @@
     "site_hostname": "http://localhost:8080",
     "org_domain": "localhost",
     "is_public_oidc_provider": true,
-    "peers_limit": 100,
-    "per_peer_roaming_limit": 100
+    "nonfavored_peers_limit": 100,
+    "per_peer_users_limit_nonfavored": 100,
+    "per_peer_users_limit_favored": 1000
 }

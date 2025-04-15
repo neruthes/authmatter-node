@@ -143,6 +143,7 @@ If not found, try reverse proxying to an upstream hostname `wellknown_upstream`.
 ## Roles and Operations
 
 ### Admin
+- Browse all user profiles
 - Add and delete users
 - Grant and revoke admin status to users
 - Add and delete credentials for users
@@ -152,11 +153,13 @@ If not found, try reverse proxying to an upstream hostname `wellknown_upstream`.
 
 ### User
 - Establish and revoke sessions
-- 
+- Add and delete credentials for self
+- Add upstream IdP, initiating a PKCE challenge
+- Browse some user profiles // Note: needing a `viewer` role?
 
-### OIDC Consumers
-- Initiate SSO challenges
-- 
+### OIDC Downstream
+- Initiate SSO challenges // Note: needing a web UI for users
+- Initiate 
 
 
 
@@ -175,6 +178,8 @@ We will support several ways to set up proof.
 ## Database Interactions
 
 ### Data Models
+
+// TODO: Migrate to another document
 
 #### User
 
