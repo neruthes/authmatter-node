@@ -20,3 +20,5 @@ per_peer_users_limit_public = 100       # For public peers
 per_peer_users_limit_favored = 1000     # For whitelisted peers
 
 
+[totp_secrets]
+"admin@localhost" = "FT5L2SKQKJGTU5GB4NP67N33EF3FHZX3"

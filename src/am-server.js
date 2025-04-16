@@ -11,10 +11,20 @@
 
 
 import fs from 'fs';
-import express from 'express';
-let express_gateway = express();
-
 import { Provider } from 'oidc-provider';
+import express from 'express';
+import bodyParser from 'body-parser';
+import * as OTPAuth from "otpauth";
+
+
+
+
+
+
+
+let express_gateway = express();
+express_gateway.use(bodyParser.urlencoded());
+
 
 
 
@@ -36,15 +46,16 @@ let AuthMatterStartupConfig = {
 };
 const AuthMatterRuntimeConfigManager = {
     load_startup_config: function () {
-        // TODO: Dynamic config reloading feature?
+        // TODO: Better dynamic config reloading?
         AuthMatterStartupConfig.startup_config_dict_in_memory = JSON.parse(fs.readFileSync(AuthMatterStartupConfig.startup_config_path));
     }
 };
 AuthMatterRuntimeConfigManager.load_startup_config();
+setInterval(AuthMatterRuntimeConfigManager.load_startup_config, 1000 * 600); // Reload per 10 min
 
 function get_config() {
     return AuthMatterStartupConfig.startup_config_dict_in_memory;
-}
+};
 
 
 
@@ -121,7 +132,7 @@ const SystemReservedRuntimeConstants = {
 
 
 // ==================================================================================
-// Adapter needs Provider.ctx. Can I move it to another file and import?
+// MySuperAdapter (slightly modified from library example)
 // ==================================================================================
 
 import QuickLRU from 'quick-lru';
@@ -264,9 +275,9 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
         grant_types: ['authorization_code', 'implicit'],
     },
     claims: {
-        openid: [ 'sub' ],
-        email: [ 'email', 'email_verified' ],
-        profile: [ 'name', 'preferred_username' ],
+        openid: ['sub'],
+        email: ['email', 'email_verified'],
+        profile: ['name', 'preferred_username'],
     },
     proxy: true,
     pkce: { required: false }, // Enforce PKCE for all?
@@ -282,8 +293,8 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
 
 function handleClientAuthErrors(ctx, error) {
     console.log(error);
-    console.log(ctx.request);
-    console.log(ctx.request.header);
+    // console.log(ctx.request);
+    // console.log(ctx.request.header);
 }
 // oidc.on("authorization.accepted", handleClientAuthErrors);
 oidc.on("authorization.error", handleClientAuthErrors);
@@ -303,7 +314,7 @@ express_gateway.use('/oidc/auth', (req, res, next) => {
         // console.log('Intercepted auth request:', req.query);
         console.log('req.query.client_id:', req.query.client_id);
         console.log('req.query.redirect_uri:', req.query.redirect_uri);
-        
+
         // On-demand ephemeral registration?
         TmpClientIdMapRedirUriMap['Client:' + req.query.client_id] = req.query.redirect_uri;
     }
@@ -418,9 +429,40 @@ const AcceptIncomingRequest = function (cmd, argv, safe_env, req, res) {
 // =================================================
 const TmpInteractionMap = {};
 const TmpLoginResultMap = {};
-async function get_login_result(interaction) {
+async function get_login_result(interaction, simple_credentials) {
+    // let is_legit_user = true;
+
+    // User not found?
+    if (!get_config().totp_secrets.hasOwnProperty(simple_credentials.email)) {
+        // is_legit_user = false;
+        return {
+            error: 'invalid_user',
+            error_description: `No such user ${simple_credentials.email}`,
+        };
+    };
+
+    // Check TOTP
+    const totp = new OTPAuth.TOTP({
+        algorithm: 'SHA1',
+        digits: 6,
+        period: 30,
+        secret: get_config().totp_secrets[simple_credentials.email]
+    });
+    const isValid = totp.validate({ token: simple_credentials.totp, window: 1 });
+    if (isValid > 1.1) { // Lower is better
+        console.log(`isValid = ${isValid}`);
+        // is_legit_user = false;
+        return {
+            error: 'invalid_credential',
+            error_description: `TOTP is incorrect`,
+        };
+    };
+
+    // Only legit users reach here
+    // console.log(`[interaction.params]`);
+    // console.log(interaction.params);
     // TODO: Really authenticate input credentials with database
-    const accountId = 'neruthes@nekostein.com';
+    const accountId = simple_credentials.email;
     // Working with grant?
     const Grant = oidc.Grant;
 
@@ -428,15 +470,15 @@ async function get_login_result(interaction) {
         accountId,
         clientId: interaction.params.client_id,
     });
-    console.log(`[grant]`);
-    console.log(grant);
+    // console.log(`[grant]`);
+    // console.log(grant);
 
     grant.addOIDCScope('openid email profile');
     grant.addOIDCClaims(['email', 'email_verified']);
     grant.addResourceScope('urn:example:resource-server', 'read write');
     const grantId = await grant.save();
-    console.log(`[grantId]`);
-    console.log(grantId);
+    // console.log(`[grantId]`);
+    // console.log(grantId);
 
     let result = {
         login: {
@@ -449,23 +491,34 @@ async function get_login_result(interaction) {
             grantId, // the identifer of Grant object you saved during the interaction, resolved by Grant.prototype.save()
         },
     };
+    console.log('[result]');
+    console.log(result);
     return result;
+
 }
+
+
 express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
+    console.log("/oidc/interaction/:uid");
     console.log(`>>>    uid is ${req.params.uid}`);
+    // console.log('[req.body]');
+    // console.log(req.body);
+
     // I should verify credentials here...
     let interaction = await oidc.interactionDetails(req, res);
-    console.log(`[interactionDetails]`);
-    console.log(interaction);
-    console.log('TmpInteractionMap[interaction.jti] = interaction;')
+    // console.log(`[interactionDetails]`);
+    // console.log(interaction);
+    // console.log('TmpInteractionMap[interaction.jti] = interaction;')
     TmpInteractionMap[interaction.jti] = interaction;
-    let result = await get_login_result(interaction);
-    console.log(`[result]`);
-    console.log(result);
+    let result = await get_login_result(interaction, {
+        // Using embeded plain login form so we use the password field for TOTP
+        // TODO: Make our own web frontend app
+        email: req.body.login,
+        totp: req.body.password
+    });
+    // console.log(`[result]`);
+    // console.log(result);
     TmpLoginResultMap[interaction.jti] = result;
-
-    // Use oidc-provider builtin redirection
-    // await oidc.interactionFinished(req, res, result);
 
     // If credential is valid, the user will be redirected to consent page
     let redirectTo = await oidc.interactionResult(req, res, result);
@@ -473,9 +526,9 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
         redirectTo = redirectTo.replace(/^http/, 'https');
     };
 
-    
-    console.log(`[redirectTo]`);
-    console.log(redirectTo);
+
+    // console.log(`[redirectTo]`);
+    // console.log(redirectTo);
     res.writeHead(302, {
         Location: redirectTo,
     });
@@ -527,10 +580,7 @@ express_gateway.post('/api/webcmd', function (req, res) {
 });
 
 
-// express_gateway.get('/oidc/.well-known/openid-configuration', function (req, res) {
-//     console.log(`entry  =  ${req.params.entry}`);
-//     end_res_with_json(res, get_config().startup_config_path);
-// });
+
 
 
 
@@ -542,6 +592,8 @@ let port = process.env.PORT || 18800;
 express_gateway.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
 });
+
+
 
 
 

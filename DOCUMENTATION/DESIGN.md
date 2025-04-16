@@ -228,7 +228,7 @@ We will support several ways to set up proof.
 ## Technical Notes
 
 - OIDC traditionally requires a `client_secret` which is usually configured manually by an admin. However, we can use PKCE so zero-configuration for peering is possible.
-
+- Temporary solution for TOTP: Use https://totp.danhersam.com/ or `node src/cli-helper/newotpsecret.js` to generate TOTP secret and copy into https://stefansundin.github.io/2fa-qr/ to generate QR code for Authenticator app scanning.
 
 
 
