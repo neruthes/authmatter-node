@@ -5,6 +5,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AuthMatter Login</title>
+    <script>
+        let params = {};
+        if (location.search.startsWith('?')) {
+            location.search.slice(1).split('&').forEach(function (section) {
+                const { key, value } = section;
+                params.key = value;
+            });
+            console.log(params);
+        };
+    </script>
+    <script>
+        let intent_type = 'interaction';
+        let intent_id = location.pathname.slice(1).split('/')[2];
+    </script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
@@ -157,7 +171,7 @@
 
 
             // Server communications
-            
+
             function api_try_login(login_name, login_totp) {
                 let xhr = new XMLHttpRequest();
                 xhr.open('POST', '/api/webcmd-guest');
@@ -166,7 +180,8 @@
                     cmd: 'guest.login_totp_and_authorize_interaction',
                     argv: {
                         login_name,
-                        login_totp
+                        login_totp,
+                        interaction_id: intent_id,
                     },
                 }));
                 xhr.addEventListener('load', function () {
@@ -189,15 +204,21 @@
                         api_on_login_fail(xhr);
                         return;
                     };
-                    api_on_login_success(xhr);
+                    api_on_login_success(rpc_result, xhr);
                 });
             };
             function api_on_login_fail(xhr) {
                 showErrorMessage();
             };
-            function api_on_login_success(xhr) {
+            function api_on_login_success(rpc_result, xhr) {
                 console.log(xhr.responseText);
                 console.log('Login success!');
+                // Then we should redirect to URI like:
+                // code=yUwC4Cngh9LzW2r-gvRW-OGtd4HQnWmhl_ovdyYyAo0&state=hic0xgz6q3&iss=https%3A%2F%2Fauthmatter.nekostein.com%2Foidc
+                // This is handled by node-oidc-provider itself?
+                let info_obj = rpc_result.stdout.interaction;
+                // location.href = info_obj.returnTo;
+                location.href = rpc_result.stdout.redirectTo;
             };
         });
     </script>

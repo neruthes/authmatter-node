@@ -25,7 +25,7 @@ import * as OTPAuth from "otpauth";
 
 
 let express_gateway = express();
-express_gateway.use(bodyParser.urlencoded());
+// express_gateway.use(bodyParser.urlencoded()); // Not needed when we use JSON only?
 
 
 
@@ -289,6 +289,17 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
         email: ['email', 'email_verified'],
         profile: ['name', 'preferred_username'],
     },
+    // ttl: {
+    //     Session: 120,
+    // },
+    // interactions: { // Causing bug?
+    //     async url(ctx, interaction) { // Will it work well?
+    //         let interaction_url = `/ui/interaction/${interaction.uid}`;
+    //         console.log('[interaction_url]');
+    //         console.log(interaction_url);
+    //         return interaction_url;
+    //     }
+    // },
     proxy: true,
     pkce: { required: false }, // Enforce PKCE for all?
     features: {
@@ -309,6 +320,45 @@ function handleClientAuthErrors(ctx, error) {
 // oidc.on("authorization.accepted", handleClientAuthErrors);
 oidc.on("authorization.error", handleClientAuthErrors);
 
+
+
+
+
+
+// Add internal middleware to Provider instance to insert my own GUI? (Or, avoid double middlewares?)
+// Does not seem right; using internal '/oidc/auth' handler with `interactions.url` method to redirect
+// oidc.use(async (ctx, next) => {
+//     const { req, res } = ctx;
+//     console.log(`>>        Provider internal middleware, ctx.path = ${ctx.path}`);
+//     if (ctx.path === '/auth') {
+//         // On-demand ephemeral registration?
+//         if (req.query.client_id && req.query.redirect_uri) {
+//             console.log('Intercepted auth request:', req.query);
+//             console.log('req.query.client_id:', req.query.client_id);
+//             console.log('req.query.redirect_uri:', req.query.redirect_uri);
+//             TmpClientIdMapRedirUriMap['Client:' + req.query.client_id] = req.query.redirect_uri;
+//         };
+
+//         console.log('// Use library method to extract Interaction object from req-to-res lifecycle context');
+//         // Use library method to extract Interaction object from req-to-res lifecycle context
+//         console.log('[oidc.interactionDetails]');
+//         console.log(oidc.interactionDetails);
+//         try {
+
+//             const result = await oidc.interactionDetails(ctx.req, ctx.res);
+//             const { uid } = result;
+//             console.log('[result]');
+//             console.log(result);
+//         }catch(e){
+//             console.error(e);
+//         };
+
+//         // Redirect to your custom login page, including the interaction UID
+//         // ctx.redirect(`/ui/interaction?id=${uid}`);
+//         // return;
+//     }
+//     await next();
+// });
 
 
 
@@ -362,7 +412,7 @@ const validate_web_token = function (token) {
 
 // Every command should receive: argv, safe_env, req, res
 const RealCommands = {
-    'guest.login_totp_and_authorize_interaction': function (argv, safe_env, req, res) {
+    'guest.login_totp_and_authorize_interaction': async function (argv, safe_env, req, res) {
         res.writeHead(200, default_json_res_headers);
         let totp_lookup_result = BusinessLogicHelpers.load_user_totp_secret(argv.login_name);
         if (totp_lookup_result.err) {
@@ -392,11 +442,75 @@ const RealCommands = {
             });
             return;
         };
-        end_res_with_json(res, {
-            error: 0,
-            stderr: '',
-            stdout: {},
-        });
+        console.log('Retrieving [interaction] ...');
+        try {
+            let interaction = TmpInteractionMap[argv.interaction_id];
+            console.log('[interaction]');
+            console.log(interaction);
+
+            // No need saving again?
+            // console.log('Saving interaction info to TmpInteractionMap ...');
+            // console.log('TmpInteractionMap[interaction.jti] = interaction;');
+            // TmpInteractionMap[interaction.jti] = interaction;
+            let result = await get_login_result(interaction, {
+                email: argv.login_name,
+                totp: argv.login_totp
+            });
+            console.log(`[result]`);
+            console.log(result);
+            console.log(`TmpLoginResultMap[${interaction.jti}] = result;`)
+            TmpLoginResultMap[interaction.jti] = result;
+
+            
+            // ----------------------------------------------------------
+            // The `oidc.interactionResult` method does not accept interaction_id or interaction_obj,
+            // so we mimic its behavior in our own code.
+            async function interactionResult_alt(interaction, result, { mergeWithLastSubmission = true } = {}) {
+                if (mergeWithLastSubmission && !('error' in result)) {
+                    interaction.result = { ...interaction.lastSubmission, ...result };
+                } else {
+                    interaction.result = result;
+                }
+                await interaction.save(interaction.exp - epochTime());
+                return interaction.returnTo;
+            }
+            // END
+            // ----------------------------------------------------------
+
+
+
+            // If credential is valid, the user will be redirected to consent page
+            // let redirectTo = await oidc.interactionResult(req, res, result); // Original way
+            let redirectTo = await interactionResult_alt(interaction, result); // Alternative way
+            if (!false) { // Config?
+                redirectTo = redirectTo.replace(/^http/, 'https');
+            };
+            console.log(`[redirectTo]`);
+            console.log(redirectTo);
+            // res.writeHead(302, {
+            //     Location: redirectTo,
+            // });
+            // res.end(`Redirecting to  ${redirectTo}  `);
+
+            // Authenticated successfully!
+            end_res_with_json(res, {
+                error: 0,
+                stderr: '',
+                stdout: {
+                    interaction_id: argv.interaction_id,
+                    login_name: argv.login_name,
+                    interaction,
+                    redirectTo
+                },
+            });
+        } catch (e) {
+            console.error(e);
+            end_res_with_json(res, {
+                error: 3,
+                stderr: 'Interaction not found',
+                stdout: {},
+            });
+        };
     },
     'user.whoami': function (argv, safe_env, req, res) { // How actually in use now
         // Test: curl --request POST --data '{ "cmd":"user.whoami","argv":{} }' http://localhost:18800/api/webcmd
@@ -419,7 +533,7 @@ const RealCommands = {
 const BusinessLogicHelpers = {
     load_user_totp_secret: function (login_name) {
         if (!get_config().totp_secrets.hasOwnProperty(login_name)) {
-            return {err:'no_user'};
+            return { err: 'no_user' };
         }
         return {
             err: 0,
@@ -540,7 +654,7 @@ async function get_login_result(interaction, simple_credentials) {
 
     grant.addOIDCScope('openid email profile');
     grant.addOIDCClaims(['email', 'email_verified']);
-    grant.addResourceScope('urn:example:resource-server', 'read write');
+    // grant.addResourceScope('urn:example:resource-server', 'read write');
     const grantId = await grant.save();
     // console.log(`[grantId]`);
     // console.log(grantId);
@@ -550,7 +664,7 @@ async function get_login_result(interaction, simple_credentials) {
             accountId, // logged-in account id
             acr: '', // acr value for the authentication
             amr: [], // amr values for the authentication
-            remember: true, // true if authorization server should use a persistent cookie rather than a session one, defaults to true
+            remember: false, // true if authorization server should use a persistent cookie rather than a session one, defaults to true
         },
         consent: {
             grantId, // the identifer of Grant object you saved during the interaction, resolved by Grant.prototype.save()
@@ -559,17 +673,39 @@ async function get_login_result(interaction, simple_credentials) {
     console.log('[result]');
     console.log(result);
     return result;
-
 }
 
 
+
+// My own Interaction login_and_consent page
+express_gateway.get("/oidc/interaction/:uid", async (req, res) => {
+    console.log("/oidc/interaction/:uid");
+    console.log(`>>>    uid is ${req.params.uid}`);
+
+    let interaction = await oidc.interactionDetails(req, res); // Dynamically constructed, safe enough?
+    console.log(`[interactionDetails]`);
+    console.log(interaction);
+
+    console.log('Saving interaction info to TmpInteractionMap ...');
+    console.log(`TmpInteractionMap[${interaction.jti}] = interaction;`);
+    TmpInteractionMap[interaction.jti] = interaction;
+
+    // Give back GUI
+    res.writeHead(200);
+    res.end(fs.readFileSync(path.resolve('./frontend-v1/src/app.html')).toString());
+});
+
+
+// Deprecated login method
 express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
+    res.writeHead(404);
+    res.end('404');
+    return;
+
     console.log("/oidc/interaction/:uid");
     console.log(`>>>    uid is ${req.params.uid}`);
     // console.log('[req.body]');
     // console.log(req.body);
-
-
 
     // I should verify credentials here...
     let interaction = await oidc.interactionDetails(req, res); // Dynamically constructed, safe enough?
@@ -583,7 +719,8 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
     } catch (e) { };
     console.log(`extracted_email_from_session = ${extracted_email_from_session}`);
 
-    // console.log('TmpInteractionMap[interaction.jti] = interaction;')
+    console.log('Saving interaction info to TmpInteractionMap ...');
+    console.log('TmpInteractionMap[interaction.jti] = interaction;');
     TmpInteractionMap[interaction.jti] = interaction;
     let result = await get_login_result(interaction, {
         // Using embeded plain login form so we use the password field for TOTP
@@ -609,22 +746,26 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
     });
     // res.send({ redirectTo });
     res.end(`Redirecting to  ${redirectTo}  `);
-    
-    
-    
+
+
+
     console.log(`Ending...`);
     console.log(`===================================================`);
 });
 
 express_gateway.use('/oidc', oidc.callback());
 
+// console.log(`==================================`);
+// console.log(`oidc.use`);
+// console.log(oidc.use);
 
-// Web frontend
-express_gateway.get('/ui/', function (req, res) {
-    res.writeHead(200);
-    res.end(fs.readFileSync(path.resolve('./frontend-v1/src/app.html')).toString());
-});
-// console.log(path.resolve('./frontend-v1/src/app.html'));
+
+// Web frontend?
+// express_gateway.get('/ui/', function (req, res) {
+//     res.writeHead(200);
+//     res.end(fs.readFileSync(path.resolve('./frontend-v1/src/app.html')).toString());
+// });
+
 
 
 
