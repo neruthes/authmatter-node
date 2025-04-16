@@ -12,6 +12,7 @@
 
 
 import fs from 'fs';
+import path from 'path';
 import { Provider } from 'oidc-provider';
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -161,6 +162,12 @@ const grantable = new Set([
     'BackchannelAuthenticationRequest',
 ]);
 
+function kill_session(id) { // Not working?
+    // Remove session to avoid a strange bug
+    let session_model = new MySuperAdapter('Session');
+    session_model.destroy(id);
+}
+
 class MySuperAdapter {
     constructor(model) {
         this.model = model;
@@ -212,9 +219,9 @@ class MySuperAdapter {
         const key = this.key(id);
 
         if (this.model === 'Session') {
-            // storage.set(sessionUidKeyFor(payload.uid), id, expiresIn * 1000);
-            storage.set(sessionUidKeyFor(payload.uid), id, 100);
+            storage.set(sessionUidKeyFor(payload.uid), id, expiresIn * 1000);
             console.log(`Adapter.upsert : Session : id=${id} (payload=${payload}) expiresIn=${expiresIn}`);
+            kill_session(id);
         }
 
         const { grantId, userCode } = payload;
@@ -355,7 +362,43 @@ const validate_web_token = function (token) {
 
 // Every command should receive: argv, safe_env, req, res
 const RealCommands = {
-    'user.whoami': function (argv, safe_env, req, res) {
+    'guest.login_totp_and_authorize_interaction': function (argv, safe_env, req, res) {
+        res.writeHead(200, default_json_res_headers);
+        let totp_lookup_result = BusinessLogicHelpers.load_user_totp_secret(argv.login_name);
+        if (totp_lookup_result.err) {
+            end_res_with_json(res, {
+                error: 1,
+                stderr: 'User not found',
+                stdout: {}
+            });
+            return;
+        };
+        // console.log(`totp_lookup_result`);
+        // console.log(totp_lookup_result);
+        const totp = new OTPAuth.TOTP({
+            algorithm: 'SHA1',
+            digits: 6,
+            period: 30,
+            secret: totp_lookup_result.secret
+        });
+        const isValid = totp.validate({ token: argv.login_totp, window: 1 });
+        console.log(`isValid`);
+        console.log(isValid);
+        if (Math.abs(isValid) > 1 || isValid === null) {
+            end_res_with_json(res, {
+                error: 2,
+                stderr: 'Bad TOTP value for user',
+                stdout: {},
+            });
+            return;
+        };
+        end_res_with_json(res, {
+            error: 0,
+            stderr: '',
+            stdout: {},
+        });
+    },
+    'user.whoami': function (argv, safe_env, req, res) { // How actually in use now
         // Test: curl --request POST --data '{ "cmd":"user.whoami","argv":{} }' http://localhost:18800/api/webcmd
         end_res_with_json(res, {
             error: 0,
@@ -363,7 +406,7 @@ const RealCommands = {
             stdout: DatabaseService.get_user_by_uid(safe_env.uid),
         });
     },
-    'admin.useradd': function (argv, safe_env, req, res) {
+    'admin.useradd': function (argv, safe_env, req, res) { // How actually in use now
         // Test: curl --request POST --data '{ "cmd":"admin.useradd","argv":{"username":"neruthes@localhost"} }' http://localhost:18800/api/webcmd
         end_res_with_json(res, {
             error: 0,
@@ -374,6 +417,15 @@ const RealCommands = {
 };
 
 const BusinessLogicHelpers = {
+    load_user_totp_secret: function (login_name) {
+        if (!get_config().totp_secrets.hasOwnProperty(login_name)) {
+            return {err:'no_user'};
+        }
+        return {
+            err: 0,
+            secret: get_config().totp_secrets[login_name]
+        };
+    },
     check_is_admin: function (uid) {
         if (!BusinessLogicHelpers.check_is_good_standing_user(uid)) {
             return false;
@@ -409,8 +461,19 @@ const BusinessLogicHelpers = {
 
 const default_json_res_headers = { 'content-type': 'application/json' };
 const AcceptIncomingRequest = function (cmd, argv, safe_env, req, res) {
+    // Does cmd exist?
     if (RealCommands[cmd] instanceof Function) {
-        RealCommands[cmd](argv, safe_env, req, res)
+        // Is cmd open for guests?
+        if (safe_env.is_guest && !cmd.startsWith('guest.')) {
+            res.writeHead(200, default_json_res_headers);
+            res.end(JSON.stringify({
+                error: 10004,
+                stderr: `Guest access not allowed`
+            }));
+        }
+        // Legit command invocation, allow execution
+        console.log(`RealCommands[${cmd}] ${JSON.stringify(argv)}`);
+        RealCommands[cmd](argv, safe_env, req, res);
     } else {
         res.writeHead(200, default_json_res_headers);
         res.end(JSON.stringify({
@@ -452,7 +515,7 @@ async function get_login_result(interaction, simple_credentials) {
         secret: get_config().totp_secrets[simple_credentials.email]
     });
     const isValid = totp.validate({ token: simple_credentials.totp, window: 1 });
-    if (isValid > 1) { // Lower is better
+    if (Math.abs(isValid) > 1 || isValid === null) { // Lower is better but null is worst
         console.log(`isValid = ${isValid}`);
         return {
             error: 'invalid_credential',
@@ -547,8 +610,7 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
     // res.send({ redirectTo });
     res.end(`Redirecting to  ${redirectTo}  `);
     
-    // Remove session to avoid a strange bug
-    // let 
+    
     
     console.log(`Ending...`);
     console.log(`===================================================`);
@@ -557,8 +619,12 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
 express_gateway.use('/oidc', oidc.callback());
 
 
-
-
+// Web frontend
+express_gateway.get('/ui/', function (req, res) {
+    res.writeHead(200);
+    res.end(fs.readFileSync(path.resolve('./frontend-v1/src/app.html')).toString());
+});
+// console.log(path.resolve('./frontend-v1/src/app.html'));
 
 
 
@@ -592,6 +658,25 @@ express_gateway.post('/api/webcmd', function (req, res) {
             res.writeHead(200, default_json_res_headers);
             res.end(JSON.stringify({ error: 10002, stderr: 'Invalid token', stdout: {} }));
         }
+    });
+});
+express_gateway.post('/api/webcmd-guest', function (req, res) { // Guest version, limit to 'guest.*' namespace
+    let req_post_body = '';
+    req.on('data', function (req_new_data) { req_post_body += req_new_data });
+    req.on('end', function () {
+        let parsed_req_body = null;
+        try {
+            parsed_req_body = JSON.parse(req_post_body);
+        } catch (e) {
+            res.writeHead(200, default_json_res_headers);
+            res.end(JSON.stringify({ error: 10001, stderr: 'Invalid payload format', stdout: {} }));
+            return;
+        };
+        let safe_env = {
+            is_guest: true
+        };
+        // console.log('AcceptIncomingRequest (guest)', parsed_req_body.cmd, parsed_req_body.argv, safe_env, req, res);
+        AcceptIncomingRequest(parsed_req_body.cmd, parsed_req_body.argv, safe_env, req, res);
     });
 });
 
