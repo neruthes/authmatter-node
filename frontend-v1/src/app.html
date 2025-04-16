@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AuthMatter Login</title>
+    <title>AuthMatter OpenID Login</title>
     <script>
         let params = {};
         if (location.search.startsWith('?')) {
@@ -102,7 +102,18 @@
 
 <body>
     <div class="login-container">
-        <h1>AuthMatter User Login</h1>
+        <h1>OpenID Login</h1>
+
+        <style>
+            #interactionInfoBlock {
+                text-align: center;
+                padding: 0 0 2em;
+            }
+        </style>
+        <div id="interactionInfoBlock">
+            <pre id="tmpInteractionDisplayPre"></pre>
+        </div>
+
         <form id="loginForm">
             <div class="form-group">
                 <label for="email">Email Address</label>
@@ -112,11 +123,13 @@
                 <label for="totp">TOTP Code</label>
                 <input type="text" id="totp" name="totp" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}" required>
             </div>
-            <button type="submit">Login</button>
+            <button type="submit">Authorize</button>
         </form>
         <div id="errorMessage" class="error-message">
             The email or TOTP code you entered is incorrect. Please try again.
         </div>
+
+        
     </div>
 
     <script>
@@ -169,26 +182,19 @@
 
 
 
-
-            // Server communications
-
-            function api_try_login(login_name, login_totp) {
+            const webcmd_initiate = function (endpoint, cmd, argv, callback, callback_context_companion_object) {
+                // After job: callback(err, server_json, callback_context_companion_object, xhr);
                 let xhr = new XMLHttpRequest();
-                xhr.open('POST', '/api/webcmd-guest');
-                xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+                xhr.open('POST', endpoint);
+                xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8"); // Really necessary?
                 xhr.send(JSON.stringify({
-                    cmd: 'guest.login_totp_and_authorize_interaction',
-                    argv: {
-                        login_name,
-                        login_totp,
-                        interaction_id: intent_id,
-                    },
+                    cmd, argv
                 }));
                 xhr.addEventListener('load', function () {
                     if (xhr.status > 302) {
-                        console.log('login: Strange bug?');
-                        console.log(xhr);
-                        alert('login: Strange bug?');
+                        // console.log('login: Strange bug?');
+                        // console.log(xhr);
+                        callback('http_code_' + xhr.status, {}, callback_context_companion_object, xhr);
                         return 1;
                     };
                     let rpc_result = null;
@@ -197,29 +203,66 @@
                     } catch (e) {
                         console.log(xhr.responseText);
                         console.log(e);
-                        alert('login: Strange bug?');
+                        callback('json_parse_error', {}, callback_context_companion_object, xhr);
                         return 1;
                     };
-                    if (rpc_result.error) {
-                        api_on_login_fail(xhr);
-                        return;
-                    };
-                    api_on_login_success(rpc_result, xhr);
+                    callback(null, rpc_result, callback_context_companion_object, xhr);
+                    return 0;
                 });
             };
-            function api_on_login_fail(xhr) {
+
+
+            // Server communications
+            function get_interaction_info() {
+                webcmd_initiate('/api/webcmd-guest', 'guest.get_interaction_info', {
+                    interaction_id: intent_id
+                }, function (err, data, context, xhr) {
+                    if (!err) {
+                        render_interaction_info(data.stdout);
+                    } else {
+                        // TODO
+                        document.body.innerHTML = `<h1>Something happened</h1> <p>Something happened</p>`;
+                    };
+                });
+            };
+
+            function api_try_login(login_name, login_totp) {
+                webcmd_initiate('/api/webcmd-guest', 'guest.login_totp_and_authorize_interaction', {
+                    login_name, login_totp,
+                    interaction_id: intent_id
+                }, function (err, data, context, xhr) {
+                    if (!err) {
+                        api_on_login_success(data, xhr);
+                    } else {
+                        api_on_login_fail();
+                    };
+                });
+            };
+            function api_on_login_fail() {
                 showErrorMessage();
             };
-            function api_on_login_success(rpc_result, xhr) {
+            function api_on_login_success(data, xhr) {
                 console.log(xhr.responseText);
                 console.log('Login success!');
                 // Then we should redirect to URI like:
                 // code=yUwC4Cngh9LzW2r-gvRW-OGtd4HQnWmhl_ovdyYyAo0&state=hic0xgz6q3&iss=https%3A%2F%2Fauthmatter.nekostein.com%2Foidc
                 // This is handled by node-oidc-provider itself?
-                let info_obj = rpc_result.stdout.interaction;
+                let info_obj = data.stdout.interaction;
                 // location.href = info_obj.returnTo;
-                location.href = rpc_result.stdout.redirectTo;
+                location.href = data.stdout.redirectTo;
             };
+            function render_interaction_info(data_stdout) {
+                const tmpInteractionDisplayPre = document.getElementById('tmpInteractionDisplayPre');
+                // tmpInteractionDisplayPre.innerHTML = (JSON.stringify(data_stdout.interaction, '\t', 4));
+                const interactionInfoBlock = document.getElementById('interactionInfoBlock');
+                let redirect_uri = data_stdout.interaction.params.redirect_uri;
+                let redirect_uri_scheme = redirect_uri.slice(0,5) === 'https' ? 'https' : 'http';
+                let redirect_uri_domain = redirect_uri.replace(redirect_uri_scheme + '://', '').split('/')[0];
+                interactionInfoBlock.innerHTML = `Proceeding to<br />${redirect_uri_scheme}://<span style="text-decoration:underline;">${redirect_uri_domain}</span>`;
+            };
+
+            // Initial works
+            get_interaction_info();
         });
     </script>
 

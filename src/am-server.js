@@ -15,17 +15,20 @@ import fs from 'fs';
 import path from 'path';
 import { Provider } from 'oidc-provider';
 import express from 'express';
-import bodyParser from 'body-parser';
+import cors from 'cors';
+import bodyParser from 'body-parser'; // For non-webcmd request bodies
 import * as OTPAuth from "otpauth";
-
-
-
-
 
 
 
 let express_gateway = express();
 // express_gateway.use(bodyParser.urlencoded()); // Not needed when we use JSON only?
+
+
+// Allow CORS on some endpoints
+express_gateway.use('/oidc/.well-known/openid-configuration', cors());
+express_gateway.use('/oidc/token', cors());
+express_gateway.use('/oidc/userinfo', cors());
 
 
 
@@ -139,6 +142,7 @@ const SystemReservedRuntimeConstants = {
 
 import QuickLRU from 'quick-lru';
 import epochTime from 'oidc-provider/lib/helpers/epoch_time.js';
+import { stderr } from 'process';
 
 let storage = new QuickLRU({ maxSize: 1000 });
 
@@ -412,6 +416,20 @@ const validate_web_token = function (token) {
 
 // Every command should receive: argv, safe_env, req, res
 const RealCommands = {
+    'guest.get_interaction_info': async function (argv, safe_env, req, res) {
+        res.writeHead(200, default_json_res_headers);
+        if (TmpInteractionMap.hasOwnProperty(argv.interaction_id)) {
+            end_res_with_json(res, {
+                error: 0,
+                stderr: '',
+                stdout: {
+                    interaction_id: argv.interaction_id,
+                    interaction: TmpInteractionMap[argv.interaction_id],
+                },
+            });
+            return;
+        };
+    },
     'guest.login_totp_and_authorize_interaction': async function (argv, safe_env, req, res) {
         res.writeHead(200, default_json_res_headers);
         let totp_lookup_result = BusinessLogicHelpers.load_user_totp_secret(argv.login_name);
@@ -442,7 +460,7 @@ const RealCommands = {
             });
             return;
         };
-        console.log('Retrieving [interaction] ...');
+        console.log(`Retrieving [interaction] (id=${argv.interaction_id}) ...`);
         try {
             let interaction = TmpInteractionMap[argv.interaction_id];
             console.log('[interaction]');
@@ -638,8 +656,8 @@ async function get_login_result(interaction, simple_credentials) {
     };
 
     // Only legit users reach here
-    // console.log(`[interaction.params]`);
-    // console.log(interaction.params);
+    console.log(`[interaction.params]`);
+    console.log(interaction.params);
     // TODO: Really authenticate input credentials with database
     const accountId = simple_credentials.email;
     // Working with grant?
@@ -689,6 +707,9 @@ express_gateway.get("/oidc/interaction/:uid", async (req, res) => {
     console.log('Saving interaction info to TmpInteractionMap ...');
     console.log(`TmpInteractionMap[${interaction.jti}] = interaction;`);
     TmpInteractionMap[interaction.jti] = interaction;
+    setTimeout(function () {
+        delete TmpInteractionMap[interaction.jti];
+    }, 1000 * 60 * 12); // Remove entry from indexing after 20 minutes // TODO: Memory leak?
 
     // Give back GUI
     res.writeHead(200);
