@@ -2,6 +2,7 @@
 //
 // DEVELOPER NOTES
 //
+// We do not need SQLite at this moment. Will add support later.
 // How to reset dev database: sqlite3 examples/dev1.sqlite "VACUUM;"
 //
 // ==========================================================================
@@ -211,7 +212,9 @@ class MySuperAdapter {
         const key = this.key(id);
 
         if (this.model === 'Session') {
-            storage.set(sessionUidKeyFor(payload.uid), id, expiresIn * 1000);
+            // storage.set(sessionUidKeyFor(payload.uid), id, expiresIn * 1000);
+            storage.set(sessionUidKeyFor(payload.uid), id, 100);
+            console.log(`Adapter.upsert : Session : id=${id} (payload=${payload}) expiresIn=${expiresIn}`);
         }
 
         const { grantId, userCode } = payload;
@@ -262,16 +265,16 @@ class MySuperAdapter {
 
 // Example config copied from lib
 const oidc = new Provider(get_config().site_hostname + '/oidc', {
-    async findAccount(ctx, sub, token) {
-        return {
-            accountId: sub,
-            async claims(use, scope, claims, rejected) {
-                return { 'sub': sub };
-            },
-        };
-    },
+    // async findAccount(ctx, sub, token) {
+    //     return {
+    //         accountId: sub,
+    //         async claims(use, scope, claims, rejected) {
+    //             return { 'sub': sub };
+    //         },
+    //     };
+    // },
     clientDefaults: {
-        response_types: ['code id_token'],
+        response_types: ['code', 'id_token'],
         grant_types: ['authorization_code', 'implicit'],
     },
     claims: {
@@ -430,16 +433,16 @@ const AcceptIncomingRequest = function (cmd, argv, safe_env, req, res) {
 const TmpInteractionMap = {};
 const TmpLoginResultMap = {};
 async function get_login_result(interaction, simple_credentials) {
-    // let is_legit_user = true;
-
     // User not found?
     if (!get_config().totp_secrets.hasOwnProperty(simple_credentials.email)) {
-        // is_legit_user = false;
         return {
             error: 'invalid_user',
             error_description: `No such user ${simple_credentials.email}`,
         };
     };
+
+    console.log(`simple_credentials.email = ${simple_credentials.email}`);
+    console.log(`simple_credentials.totp = ${simple_credentials.totp}`);
 
     // Check TOTP
     const totp = new OTPAuth.TOTP({
@@ -449,9 +452,8 @@ async function get_login_result(interaction, simple_credentials) {
         secret: get_config().totp_secrets[simple_credentials.email]
     });
     const isValid = totp.validate({ token: simple_credentials.totp, window: 1 });
-    if (isValid > 1.1) { // Lower is better
+    if (isValid > 1) { // Lower is better
         console.log(`isValid = ${isValid}`);
-        // is_legit_user = false;
         return {
             error: 'invalid_credential',
             error_description: `TOTP is incorrect`,
@@ -504,16 +506,26 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
     // console.log('[req.body]');
     // console.log(req.body);
 
+
+
     // I should verify credentials here...
-    let interaction = await oidc.interactionDetails(req, res);
-    // console.log(`[interactionDetails]`);
-    // console.log(interaction);
+    let interaction = await oidc.interactionDetails(req, res); // Dynamically constructed, safe enough?
+    console.log(`[interactionDetails]`);
+    console.log(interaction);
+
+    let extracted_email_from_session = 'lastresort@example.com';
+    try {
+        // Does the lib really retrieve accountId from server cookie validation?
+        extracted_email_from_session = interaction.session.accountId;
+    } catch (e) { };
+    console.log(`extracted_email_from_session = ${extracted_email_from_session}`);
+
     // console.log('TmpInteractionMap[interaction.jti] = interaction;')
     TmpInteractionMap[interaction.jti] = interaction;
     let result = await get_login_result(interaction, {
         // Using embeded plain login form so we use the password field for TOTP
         // TODO: Make our own web frontend app
-        email: req.body.login,
+        email: req.body.login || extracted_email_from_session,
         totp: req.body.password
     });
     // console.log(`[result]`);
@@ -534,6 +546,10 @@ express_gateway.post("/oidc/interaction/:uid", async (req, res) => {
     });
     // res.send({ redirectTo });
     res.end(`Redirecting to  ${redirectTo}  `);
+    
+    // Remove session to avoid a strange bug
+    // let 
+    
     console.log(`Ending...`);
     console.log(`===================================================`);
 });
@@ -614,7 +630,7 @@ let IS_GRACEFULLY_SHUTTING_DOWN = false;
 process.on('SIGINT', function () {
     IS_GRACEFULLY_SHUTTING_DOWN = true;
     console.error('\nGracefully shutting down...')
-    setTimeout(process.exit, 100);
+    setTimeout(process.exit, 200);
 });
 
 

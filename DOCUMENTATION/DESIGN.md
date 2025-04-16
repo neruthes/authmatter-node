@@ -65,7 +65,7 @@ services:
   authmatter:
     restart: 'always'
     image: '...'
-    command: 'authmatter-docker-entry.sh'
+    command: 'authmatter-docker-entry.sh' # No need explicit mention?
     volumes:            # Mount single files into container
       - ./examples/dev1.json:/config.json
       - ./examples/dev1.sqlite:/db.sqlite
