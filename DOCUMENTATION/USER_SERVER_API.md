@@ -1,6 +1,6 @@
 # AuthMatter User-Server API
 
-
+Many design considerations collected in this document are not implemented yet.
 
 
 

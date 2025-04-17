@@ -22,8 +22,9 @@ SSO IdP peering with OIDC.
 ## Deployment
 
 - Clone repo and `yarn`.
-- Have a config JSON like `examples/dev1.json`.
-- Run `PORT=8080 node src/am-server.js path/to/config.json`
+- Have a config JSON like `examples/dev1.json` in some directory, e.g. `sites-enabled/mysite.json`.
+- Generate keystore using [mkjwk](https://mkjwk.org/) and save to `sites-enabled/mysite.keystore.json`.
+- Run `PORT=8080 node src/am-server.js sites-enabled/mysite.json sites-enabled/mysite.keystore.json`.
 
 
 

@@ -47,6 +47,7 @@ const TmpClientIdMapRedirUriMap = {};
 
 let AuthMatterStartupConfig = {
     startup_config_path: process.argv[2] || process.env.AM_CONFIG_PATH,
+    jwt_keystore_path: process.argv[3] || process.env.AM_KEYSTORE_PATH,
     startup_config_dict_in_memory: {},
 };
 const AuthMatterRuntimeConfigManager = {
@@ -65,6 +66,10 @@ function get_config() {
 
 
 
+
+
+
+
 const fancy_stringify_json = function (obj) {
     return JSON.stringify(obj, '\t', 4);
 };
@@ -77,44 +82,44 @@ const end_res_with_json = function (res, obj) {
 
 
 // Use mock database before the database structure is fully decided
-const DevMockDatabase = {
-    uid_autoincremental_heap: 1,
+// const DevMockDatabase = {
+//     uid_autoincremental_heap: 1,
 
-    users: {
-        // UID 0 and lower are reserved for error handling
-        1: {
-            uid: 1,
-            username_short: 'root', // Really stored in database
-            username: 'root@' + get_config().org_domain, // Computed from `username_short` and `org_domain`
-            display_name: 'AuthMatterRootUser',
-            user_roles: ['staff', 'admin'],
-            is_domestic: true,
-            org_domain: '!', // Show '!' when is domestic
-            home: '!', // Computed via domain verification, if not domestic
-            is_frozen: false,
-        }
-    },
-    roaming_from_domains: [
-        'shinonometn.com',
-        'nekostein.com',
-    ]
-};
+//     users: {
+//         // UID 0 and lower are reserved for error handling
+//         1: {
+//             uid: 1,
+//             username_short: 'root', // Really stored in database
+//             username: 'root@' + get_config().org_domain, // Computed from `username_short` and `org_domain`
+//             display_name: 'AuthMatterRootUser',
+//             user_roles: ['staff', 'admin'],
+//             is_domestic: true,
+//             org_domain: '!', // Show '!' when is domestic
+//             home: '!', // Computed via domain verification, if not domestic
+//             is_frozen: false,
+//         }
+//     },
+//     roaming_from_domains: [
+//         'shinonometn.com',
+//         'nekostein.com',
+//     ]
+// };
 
 
 
 // Rewrite implementation when migrating to SQLite
-const DatabaseService = {
-    get_user_by_uid: function (uid) {
-        if (DevMockDatabase.users[uid]) {
-            return DevMockDatabase.users[uid];
-        } else {
-            throw (new Error('ERR10004: User does not exist for given UID'));
-        };
-    },
-    get_roaming_peers_domain_whitelist: function () {
-        return DevMockDatabase.roaming_from_domains;
-    },
-};
+// const DatabaseService = {
+//     get_user_by_uid: function (uid) {
+//         if (DevMockDatabase.users[uid]) {
+//             return DevMockDatabase.users[uid];
+//         } else {
+//             throw (new Error('ERR10004: User does not exist for given UID'));
+//         };
+//     },
+//     get_roaming_peers_domain_whitelist: function () {
+//         return DevMockDatabase.roaming_from_domains;
+//     },
+// };
 
 
 const SystemReservedRuntimeConstants = {
@@ -274,16 +279,29 @@ class MySuperAdapter {
 
 
 
-// Example config copied from lib
+// Example config copied from lib with some modifications
 const oidc = new Provider(get_config().site_hostname + '/oidc', {
-    // async findAccount(ctx, sub, token) {
-    //     return {
-    //         accountId: sub,
-    //         async claims(use, scope, claims, rejected) {
-    //             return { 'sub': sub };
-    //         },
-    //     };
-    // },
+    async findAccount(ctx, accountId, token) {
+        if (!get_config().totp_secrets.hasOwnProperty(accountId)) {
+            return false;
+        };
+        return {
+            accountId: accountId,
+            async claims(use, scope, claims, rejected) {
+                // return { 'sub': sub }; // Default example
+                let result = { sub: accountId };
+                if (scope.includes('email')) {
+                    result.email = accountId;
+                    result.email_verified = true;
+                };
+                if (scope.includes('profile')) {
+                    result.name = accountId;
+                    result.preferred_username = accountId.split('@')[0];
+                };
+                return result;
+            },
+        };
+    },
     clientDefaults: {
         response_types: ['code', 'id_token'],
         grant_types: ['authorization_code', 'implicit'],
@@ -313,8 +331,13 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
         revocation: { enabled: false },
     },
     clients: [],
+    jwks: JSON.parse(fs.readFileSync(AuthMatterStartupConfig.jwt_keystore_path).toString()), // JWT keystore loaded here?????
     adapter: MySuperAdapter,
 });
+
+
+
+
 
 function handleClientAuthErrors(ctx, error) {
     console.log(error);
@@ -479,7 +502,7 @@ const RealCommands = {
             console.log(`TmpLoginResultMap[${interaction.jti}] = result;`)
             TmpLoginResultMap[interaction.jti] = result;
 
-            
+
             // ----------------------------------------------------------
             // The `oidc.interactionResult` method does not accept interaction_id or interaction_obj,
             // so we mimic its behavior in our own code.
@@ -530,22 +553,25 @@ const RealCommands = {
             });
         };
     },
-    'user.whoami': function (argv, safe_env, req, res) { // How actually in use now
-        // Test: curl --request POST --data '{ "cmd":"user.whoami","argv":{} }' http://localhost:18800/api/webcmd
-        end_res_with_json(res, {
-            error: 0,
-            stderr: '',
-            stdout: DatabaseService.get_user_by_uid(safe_env.uid),
-        });
-    },
-    'admin.useradd': function (argv, safe_env, req, res) { // How actually in use now
-        // Test: curl --request POST --data '{ "cmd":"admin.useradd","argv":{"username":"neruthes@localhost"} }' http://localhost:18800/api/webcmd
-        end_res_with_json(res, {
-            error: 0,
-            stderr: '',
-            stdout: {}
-        });
-    },
+
+
+    // More commands to come in future; they need SQLite.
+    // 'user.whoami': function (argv, safe_env, req, res) { // How actually in use now
+    //     // Test: curl --request POST --data '{ "cmd":"user.whoami","argv":{} }' http://localhost:18800/api/webcmd
+    //     end_res_with_json(res, {
+    //         error: 0,
+    //         stderr: '',
+    //         stdout: DatabaseService.get_user_by_uid(safe_env.uid),
+    //     });
+    // },
+    // 'admin.useradd': function (argv, safe_env, req, res) { // How actually in use now
+    //     // Test: curl --request POST --data '{ "cmd":"admin.useradd","argv":{"username":"neruthes@localhost"} }' http://localhost:18800/api/webcmd
+    //     end_res_with_json(res, {
+    //         error: 0,
+    //         stderr: '',
+    //         stdout: {}
+    //     });
+    // },
 };
 
 const BusinessLogicHelpers = {
@@ -670,7 +696,7 @@ async function get_login_result(interaction, simple_credentials) {
     // console.log(`[grant]`);
     // console.log(grant);
 
-    grant.addOIDCScope('openid email profile');
+    grant.addOIDCScope('openid email profile offline_access');
     grant.addOIDCClaims(['email', 'email_verified']);
     // grant.addResourceScope('urn:example:resource-server', 'read write');
     const grantId = await grant.save();

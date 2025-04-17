@@ -13,6 +13,7 @@ Existing SSO solutions (like Zitadel and Keycloak) are often too heavy for small
 And they lack a modern peer roaming feature.
 AuthMatter is designed to be a KISS solution.
 
+Many design considerations collected in this document are not implemented yet.
 
 
 ## Features
