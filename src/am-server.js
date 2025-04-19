@@ -12,6 +12,7 @@
 
 
 import fs from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 import { Provider } from 'oidc-provider';
 import express from 'express';
@@ -147,7 +148,8 @@ const SystemReservedRuntimeConstants = {
 
 import QuickLRU from 'quick-lru';
 import epochTime from 'oidc-provider/lib/helpers/epoch_time.js';
-import { stderr } from 'process';
+import { stderr, stdout } from 'process';
+import { networkInterfaces } from 'os';
 
 let storage = new QuickLRU({ maxSize: 1000 });
 
@@ -437,6 +439,99 @@ const validate_web_token = function (token) {
 };
 
 
+
+
+
+function new_verify_totp(login_name, login_totp) {
+    // return {err: 0, ... }
+    // return {err: 'invalid_xxx', ... }
+    let totp_lookup_result = BusinessLogicHelpers.load_user_totp_secret(login_name);
+    if (totp_lookup_result.err) {
+        return { err: 'no_user' };
+    };
+    const totp = new OTPAuth.TOTP({
+        algorithm: 'SHA1',
+        digits: 6,
+        period: 30,
+        secret: totp_lookup_result.secret
+    });
+    const isValid = totp.validate({ token: login_totp, window: 1 });
+    console.log(`isValid`);
+    console.log(isValid);
+    if (Math.abs(isValid) > 1 || isValid === null) {
+        return { err: 'bad_totp' };
+    };
+    // Reaching here? Good credentials!
+    // console.log(`totp_lookup_result`);
+    // console.log(totp_lookup_result);
+    return { err: 0 };
+};
+
+function try_reject_login_with_totp_result(verify_result) {
+    // return true when good login
+    if (!verify_result.err) {
+        return true;
+    }
+    if (verify_result.err === 'no_user') {
+        end_res_with_json(res, {
+            error: 1,
+            stderr: 'User not found',
+            stdout: {}
+        });
+        return false;
+    };
+    if (verify_result.err === 'bad_totp') {
+        end_res_with_json(res, {
+            error: 2,
+            stderr: 'Bad TOTP value for user',
+            stdout: {},
+        });
+        return false;
+    };
+}
+
+
+
+// A place to keep amt1 tokens?
+const TmpAmt1TokenStorage = {
+    _data: {},
+    _store_path: AuthMatterStartupConfig.startup_config_path + '.amt1db'
+};
+TmpAmt1TokenStorage.load = function () {
+    try {
+        TmpAmt1TokenStorage._data = JSON.parse(fs.readFileSync(TmpAmt1TokenStorage._store_path).toString());
+    } catch (e) {
+        console.log(`[INFO] Amt1 token storage cache '${TmpAmt1TokenStorage._store_path}' not found, but we are cool.`);
+    };
+};
+TmpAmt1TokenStorage.load();
+TmpAmt1TokenStorage.save = function (token, refreshed_at) {
+    try {
+        fs.writeFile(TmpAmt1TokenStorage._store_path, JSON.stringify(TmpAmt1TokenStorage._data, '\t', 4), (err) => {
+            if (err) {
+                console.log(`[WARN] Failed writing Amt1 token storage cache '${TmpAmt1TokenStorage._store_path}' file?`);
+            } else {
+                console.log(`[INFO] Updated Amt1 token storage cache '${TmpAmt1TokenStorage._store_path}' file.`);
+            };
+        });
+    } catch (e) {
+    };
+};
+TmpAmt1TokenStorage.insert = function (token, account_id, refreshed_at) {
+    TmpAmt1TokenStorage._data[token] = { token, account_id, refreshed_at };
+};
+TmpAmt1TokenStorage.find_token = function (token) {
+    if (!TmpAmt1TokenStorage._data[token]) { return null; }
+    const expiry_length = 14 * 24 * 3600 * 1000; // 14 days
+    if (TmpAmt1TokenStorage._data[token].refreshed_at < Date.now() - expiry_length) {
+        delete TmpAmt1TokenStorage._data[token];
+        return null;
+    };
+    return TmpAmt1TokenStorage._data[token];
+};
+
+
+
 // Every command should receive: argv, safe_env, req, res
 const RealCommands = {
     'guest.get_interaction_info': async function (argv, safe_env, req, res) {
@@ -453,36 +548,49 @@ const RealCommands = {
             return;
         };
     },
-    'guest.login_totp_and_authorize_interaction': async function (argv, safe_env, req, res) {
-        res.writeHead(200, default_json_res_headers);
-        let totp_lookup_result = BusinessLogicHelpers.load_user_totp_secret(argv.login_name);
-        if (totp_lookup_result.err) {
+    'guest.verify_amt1token': async function (argv, safe_env, req, res) {
+        let query_record = TmpAmt1TokenStorage.find_token(argv.token);
+        if (!query_record) {
             end_res_with_json(res, {
-                error: 1,
-                stderr: 'User not found',
+                err: 1,
+                stderr: 'Invalid token',
                 stdout: {}
             });
             return;
         };
-        // console.log(`totp_lookup_result`);
-        // console.log(totp_lookup_result);
-        const totp = new OTPAuth.TOTP({
-            algorithm: 'SHA1',
-            digits: 6,
-            period: 30,
-            secret: totp_lookup_result.secret
+        query_record.refreshed_at = Date.now();
+        end_res_with_json(res, {
+            err: 0,
+            stderr: '',
+            stdout: {
+                login_name: query_record.account_id,
+            }
+        })
+    },
+    'guest.login_totp_then_keep_amt1token': async function (argv, safe_env, req, res) {
+        // amt1token: AuthMatter token version 1, a short-living token in-memory with cache on disk?
+        res.writeHead(200, default_json_res_headers);
+        let verify_result = new_verify_totp(argv.login_name, argv.login_totp);
+        if (!try_reject_login_with_totp_result(verify_result, res)) { return };
+        let new_token = crypto.randomUUID();
+        TmpAmt1TokenStorage.insert(new_token, argv.login_name, Date.now());
+        end_res_with_json(res, {
+            err: 0,
+            stderr: '',
+            stdout: { new_token }
         });
-        const isValid = totp.validate({ token: argv.login_totp, window: 1 });
-        console.log(`isValid`);
-        console.log(isValid);
-        if (Math.abs(isValid) > 1 || isValid === null) {
-            end_res_with_json(res, {
-                error: 2,
-                stderr: 'Bad TOTP value for user',
-                stdout: {},
-            });
-            return;
-        };
+        TmpAmt1TokenStorage.save();
+    },
+    'guest.login_totp_and_authorize_interaction': async function (argv, safe_env, req, res) { // Deprecated
+        res.writeHead(200, default_json_res_headers);
+        let verify_result = new_verify_totp(argv.login_name, argv.login_totp);
+        if (!try_reject_login_with_totp_result(verify_result, res)) { return };
+        // Reaching here? Good credentials!
+
+
+        // ===============================================================
+        // Migrated the following operations to another command!
+        // ===============================================================
         console.log(`Retrieving [interaction] (id=${argv.interaction_id}) ...`);
         try {
             let interaction = TmpInteractionMap[argv.interaction_id];
@@ -528,10 +636,6 @@ const RealCommands = {
             };
             console.log(`[redirectTo]`);
             console.log(redirectTo);
-            // res.writeHead(302, {
-            //     Location: redirectTo,
-            // });
-            // res.end(`Redirecting to  ${redirectTo}  `);
 
             // Authenticated successfully!
             end_res_with_json(res, {
@@ -553,6 +657,100 @@ const RealCommands = {
             });
         };
     },
+    'guest.approve_interaction_using_token': async function (argv, safe_env, req, res) {
+        let query_record = TmpAmt1TokenStorage.find_token(argv.token);
+        if (!query_record) {
+            end_res_with_json(res, {
+                err: 1,
+                stderr: 'Invalid token',
+                stdout: {}
+            });
+            return;
+        };
+        // If reaching here, this is a good user!
+        // Refresh token
+        query_record.refreshed_at = Date.now();
+        let login_name = query_record.account_id;
+        // Approve interaction manually here...
+        console.log(`Retrieving [interaction] (id=${argv.interaction_id}) ...`);
+        try {
+            let interaction = TmpInteractionMap[argv.interaction_id];
+            console.log('[interaction]');
+            console.log(interaction);
+
+            // No need saving again?
+            // console.log('Saving interaction info to TmpInteractionMap ...');
+            // console.log('TmpInteractionMap[interaction.jti] = interaction;');
+            // TmpInteractionMap[interaction.jti] = interaction;
+            let result = await get_login_result(interaction, {
+                email: login_name,
+                totp: argv.login_totp,
+                is_verified_already: true
+            });
+            console.log(`[result]`);
+            console.log(result);
+            console.log(`TmpLoginResultMap[${interaction.jti}] = result;`)
+            TmpLoginResultMap[interaction.jti] = result;
+
+
+            // ----------------------------------------------------------
+            // The `oidc.interactionResult` method does not accept interaction_id or interaction_obj,
+            // so we mimic its behavior in our own code.
+            async function interactionResult_alt(interaction, result, { mergeWithLastSubmission = true } = {}) {
+                if (mergeWithLastSubmission && !('error' in result)) {
+                    interaction.result = { ...interaction.lastSubmission, ...result };
+                } else {
+                    interaction.result = result;
+                }
+                await interaction.save(interaction.exp - epochTime());
+                return interaction.returnTo;
+            }
+            // END
+            // ----------------------------------------------------------
+
+
+
+            // If credential is valid, the user will be redirected to consent page
+            // let redirectTo = await oidc.interactionResult(req, res, result); // Original way
+            let redirectTo = await interactionResult_alt(interaction, result); // Alternative way
+            if (!false) { // Config?
+                redirectTo = redirectTo.replace(/^http/, 'https');
+            };
+            console.log(`[redirectTo]`);
+            console.log(redirectTo);
+
+            // Authenticated successfully!
+            end_res_with_json(res, {
+                error: 0,
+                stderr: '',
+                stdout: {
+                    interaction_id: argv.interaction_id,
+                    login_name: argv.login_name,
+                    interaction,
+                    redirectTo
+                },
+            });
+        } catch (e) {
+            console.error(e);
+            end_res_with_json(res, {
+                error: 3,
+                stderr: 'Interaction not found',
+                stdout: {},
+            });
+        };
+    },
+
+
+    // User namespace
+    // 'user.revoke_token': function (argv, safe_env, req, res) {
+    //     end_res_with_json(res, {
+    //         err: 0,
+    //         stderr: '',
+    //         stdout: {
+    //             msg: 'Server does not disclose token revocation operation results. Feel safe.'
+    //         }
+    //     })
+    // }
 
 
     // More commands to come in future; they need SQLite.
@@ -665,21 +863,23 @@ async function get_login_result(interaction, simple_credentials) {
     console.log(`simple_credentials.email = ${simple_credentials.email}`);
     console.log(`simple_credentials.totp = ${simple_credentials.totp}`);
 
-    // Check TOTP
-    const totp = new OTPAuth.TOTP({
-        algorithm: 'SHA1',
-        digits: 6,
-        period: 30,
-        secret: get_config().totp_secrets[simple_credentials.email]
-    });
-    const isValid = totp.validate({ token: simple_credentials.totp, window: 1 });
-    if (Math.abs(isValid) > 1 || isValid === null) { // Lower is better but null is worst
-        console.log(`isValid = ${isValid}`);
-        return {
-            error: 'invalid_credential',
-            error_description: `TOTP is incorrect`,
+    if (!simple_credentials.is_verified_already) {
+        // Check TOTP
+        const totp = new OTPAuth.TOTP({
+            algorithm: 'SHA1',
+            digits: 6,
+            period: 30,
+            secret: get_config().totp_secrets[simple_credentials.email]
+        });
+        const isValid = totp.validate({ token: simple_credentials.totp, window: 1 });
+        if (Math.abs(isValid) > 1 || isValid === null) { // Lower is better but null is worst
+            console.log(`isValid = ${isValid}`);
+            return {
+                error: 'invalid_credential',
+                error_description: `TOTP is incorrect`,
+            };
         };
-    };
+    }
 
     // Only legit users reach here
     console.log(`[interaction.params]`);

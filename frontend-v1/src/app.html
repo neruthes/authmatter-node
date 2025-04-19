@@ -100,7 +100,7 @@
     </style>
 </head>
 
-<body>
+<body data-app-mode="startup">
     <div class="login-container">
         <h1>OpenID Login</h1>
 
@@ -110,30 +110,98 @@
                 padding: 0 0 2em;
             }
         </style>
-        <div id="interactionInfoBlock">
-            <pre id="tmpInteractionDisplayPre"></pre>
+
+        <div>
+            <div id="interactionInfoBlock">
+                <pre id="tmpInteractionDisplayPre"></pre>
+            </div>
         </div>
 
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" required>
+        <!-- App Modes -->
+        <style>
+            .only-for-mode {
+                display: none;
+            }
+
+            body[data-app-mode="startup"] [data-only-for-mode="startup"] {
+                display: block !important;
+            }
+
+            body[data-app-mode="login"] [data-only-for-mode="login"] {
+                display: block !important;
+            }
+
+            body[data-app-mode="approval"] [data-only-for-mode="approval"] {
+                display: block !important;
+            }
+        </style>
+        <div>
+            <!-- Only available in startup mode -->
+            <div class="only-for-mode" data-only-for-mode="startup">
+                <p>Loading...</p>
             </div>
-            <div class="form-group">
-                <label for="totp">TOTP Code</label>
-                <input type="text" id="totp" name="totp" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}" required>
+
+            <!-- Only available in approval mode -->
+            <div class="only-for-mode" data-only-for-mode="approval">
+                <div>
+                    <div style="text-align: center;">
+                        <div>
+                            Welcome back<br />
+                            <strong>
+                                <span id="labelAuthenticatedEmail">UserEmailPlaceholder</span>
+                            </strong>
+                        </div>
+                        <p>Do you intend to approve?</p>
+                    </div>
+                    <form id="tokenApprovalForm">
+                        <button type="submit">Authorize</button>
+
+                        <div style="height: 0.7em;"></div>
+                        <div style="text-align: center;">
+                            Or you can <a id="btn_change_account" href="#">use another account</a>
+                        </div>
+                    </form>
+                </div>
             </div>
-            <button type="submit">Authorize</button>
-        </form>
-        <div id="errorMessage" class="error-message">
-            The email or TOTP code you entered is incorrect. Please try again.
+
+            <!-- Only available in login mode -->
+            <div class="only-for-mode" data-only-for-mode="login">
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <input type="email" id="email" name="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="totp">TOTP Code</label>
+                        <input type="text" id="totp" name="totp" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}" required>
+                    </div>
+                    <button type="submit">Authorize</button>
+                </form>
+                <div id="errorMessage" class="error-message">
+                    Invalid login credentials. Please try again.
+                </div>
+            </div>
         </div>
 
-        
+
+
+
+
     </div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function () {
+            function load_cached_email() {
+                if (localStorage && localStorage.getItem('authmatter.login.email') instanceof String) {
+                    document.getElementById('email').value = localStorage.getItem('authmatter.login.email');
+                };
+            };
+            load_cached_email();
+            function save_cached_email(new_email) {
+                localStorage.setItem('authmatter.login.email', new_email);
+            };
+
+            const tokenApprovalForm = document.getElementById('tokenApprovalForm');
             const loginForm = document.getElementById('loginForm');
             const errorMessage = document.getElementById('errorMessage');
 
@@ -144,7 +212,23 @@
                 const email = document.getElementById('email').value;
                 const totp = document.getElementById('totp').value;
 
-                api_try_login(email, totp);
+                console.log('api_try_login_v2(email, totp);')
+                api_try_login_v2(email, totp);
+            });
+            tokenApprovalForm.addEventListener('submit', function (event) {
+                event.preventDefault();
+
+                console.log('api_approve_interaction();')
+                api_approve_interaction();
+            });
+
+            // Change account?
+            document.getElementById('btn_change_account').addEventListener('click', function (event) {
+                event.preventDefault();
+                console.log('btn_change_account -> click')
+                localStorage.removeItem('authmatter.login.email');
+                localStorage.removeItem('authmatter.user_token');
+                location.reload();
             });
 
             function reset_ui() {
@@ -182,19 +266,19 @@
 
 
 
-            const webcmd_initiate = function (endpoint, cmd, argv, callback, callback_context_companion_object) {
+            const webcmd_initiate = function (endpoint, cmd, argv, callback, _options) {
                 // After job: callback(err, server_json, callback_context_companion_object, xhr);
+                let options = _options || { callback_context_companion_object: null };
                 let xhr = new XMLHttpRequest();
+                xhr.timeout = options.xhr_timeout || 0;
                 xhr.open('POST', endpoint);
                 xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8"); // Really necessary?
                 xhr.send(JSON.stringify({
                     cmd, argv
                 }));
-                xhr.addEventListener('load', function () {
+                const on_load_or_timeout = function (event_name) {
                     if (xhr.status > 302) {
-                        // console.log('login: Strange bug?');
-                        // console.log(xhr);
-                        callback('http_code_' + xhr.status, {}, callback_context_companion_object, xhr);
+                        callback('http_code_' + xhr.status, {}, options.callback_context_companion_object, xhr);
                         return 1;
                     };
                     let rpc_result = null;
@@ -203,12 +287,18 @@
                     } catch (e) {
                         console.log(xhr.responseText);
                         console.log(e);
-                        callback('json_parse_error', {}, callback_context_companion_object, xhr);
+                        callback('json_parse_error', {}, options.callback_context_companion_object, xhr);
                         return 1;
                     };
-                    callback(null, rpc_result, callback_context_companion_object, xhr);
+                    let callback_err_obj = null;
+                    if (event_name !== 'load') {
+                        callback_err_obj = `ending_with_${event_name}`;
+                    };
+                    callback(callback_err_obj, rpc_result, options.callback_context_companion_object, xhr);
                     return 0;
-                });
+                };
+                xhr.addEventListener('load', () => { on_load_or_timeout('load') });
+                xhr.addEventListener('timeout', () => { on_load_or_timeout('timeout') });
             };
 
 
@@ -226,18 +316,61 @@
                 });
             };
 
-            function api_try_login(login_name, login_totp) {
-                webcmd_initiate('/api/webcmd-guest', 'guest.login_totp_and_authorize_interaction', {
-                    login_name, login_totp,
-                    interaction_id: intent_id
+            function api_approve_interaction() {
+                console.log(`api_approve_interaction`);
+                webcmd_initiate('/api/webcmd-guest', 'guest.approve_interaction_using_token', {
+                    interaction_id: intent_id,
+                    token: localStorage.getItem('authmatter.user_token')
                 }, function (err, data, context, xhr) {
                     if (!err) {
-                        api_on_login_success(data, xhr);
+                        console.log(xhr.responseText);
+                        console.log('Login success!');
+                        // Then we should redirect to URI like:
+                        // code=yUwC4Cngh9LzW2r-gvRW-OGtd4HQnWmhl_ovdyYyAo0&state=hic0xgz6q3&iss=https%3A%2F%2Fauthmatter.nekostein.com%2Foidc
+                        // This is handled by node-oidc-provider itself?
+                        let info_obj = data.stdout.interaction;
+                        location.href = data.stdout.redirectTo;
+                    } else {
+                        // Failed approving?
+                        // If token is incorrect, we should remove token and change body 'data-app-mode'
+                        console.log(data);
+                        console.log(xhr);
+                        document.body.innerHTML = `<h1>Something happened</h1> <p>Something happened</p>`;
+                    };
+                });
+            }
+
+            function api_try_login_v2(login_name, login_totp) { // 
+                save_cached_email(login_name);
+                console.log(localStorage.getItem('authmatter.login.email'));
+                webcmd_initiate('/api/webcmd-guest', 'guest.login_totp_then_keep_amt1token', {
+                    login_name, login_totp
+                }, function (err, data, context, xhr) {
+                    if (!err) {
+                        // api_on_login_success(data, xhr);
+                        // Save new token
+                        localStorage.setItem('authmatter.user_token', data.stdout.new_token);
+                        // Then approve interaction with token!
+                        console.log('Then approve interaction with token!');
+                        api_approve_interaction();
                     } else {
                         api_on_login_fail();
                     };
                 });
             };
+            // function api_try_login(login_name, login_totp) {
+            //     save_cached_email(login_name);
+            //     webcmd_initiate('/api/webcmd-guest', 'guest.login_totp_and_authorize_interaction', {
+            //         login_name, login_totp,
+            //         interaction_id: intent_id
+            //     }, function (err, data, context, xhr) {
+            //         if (!err) {
+            //             api_on_login_success(data, xhr);
+            //         } else {
+            //             api_on_login_fail();
+            //         };
+            //     });
+            // };
             function api_on_login_fail() {
                 showErrorMessage();
             };
@@ -256,18 +389,86 @@
                 // tmpInteractionDisplayPre.innerHTML = (JSON.stringify(data_stdout.interaction, '\t', 4));
                 const interactionInfoBlock = document.getElementById('interactionInfoBlock');
                 let redirect_uri = data_stdout.interaction.params.redirect_uri;
-                let redirect_uri_scheme = redirect_uri.slice(0,5) === 'https' ? 'https' : 'http';
+                let redirect_uri_scheme = redirect_uri.slice(0, 5) === 'https' ? 'https' : 'http';
                 let redirect_uri_domain = redirect_uri.replace(redirect_uri_scheme + '://', '').split('/')[0];
                 interactionInfoBlock.innerHTML = `Proceeding to<br />${redirect_uri_scheme}://<span style="text-decoration:underline;">${redirect_uri_domain}</span>`;
             };
 
+
+
+
+
+
+
+
+            function app_enter_login_mode() {
+                document.body.setAttribute('data-app-mode', 'login');
+            };
+            function app_enter_approval_mode(login_name) {
+                document.body.setAttribute('data-app-mode', 'approval');
+                document.getElementById('labelAuthenticatedEmail').innerHTML = login_name;
+            };
+
+
             // Initial works
-            get_interaction_info();
+            window.app_main_context = {};
+            function app_main() {
+                get_interaction_info();
+
+                // Get cached token
+                let cached_token = localStorage.getItem('authmatter.user_token');
+                if (cached_token) {
+                    // Validate token with server
+                    webcmd_initiate('/api/webcmd-guest', 'guest.verify_amt1token', {
+                        token: cached_token
+                    }, function (err, server_json) {
+                        app_main_context.last_token_whoami_result = server_json;
+                        if (!err) {
+                            app_enter_approval_mode(server_json.stdout.login_name);
+                        } else {
+                            app_enter_login_mode();
+                        };
+                    }, { xhr_timeout: 5000 });
+                } else {
+                    // Standard login
+                    app_enter_login_mode();
+                };
+            }
+
+            app_main(); // Really start here!
         });
     </script>
 
 
 
 </body>
+
+
+
+
+
+
+
+
+<!--
+
+
+# DOCUMENTATION
+
+## Main Workflow
+
+- (START)
+- Get Interaction information
+- Validate cached token; if invalid...
+    - Create new token using email and TOTP
+    - Preserve token
+    - Save token
+    - (CONTINUE)
+- Approve interaction using token
+- (END)
+
+
+
+-->
 
 </html>
