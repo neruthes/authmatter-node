@@ -154,7 +154,7 @@
                         <p>Do you intend to approve?</p>
                     </div>
                     <form id="tokenApprovalForm">
-                        <button type="submit">Authorize</button>
+                        <button type="submit">Approve</button>
 
                         <div style="height: 0.7em;"></div>
                         <div style="text-align: center;">
@@ -175,7 +175,7 @@
                         <label for="totp">TOTP Code</label>
                         <input type="text" id="totp" name="totp" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}" required>
                     </div>
-                    <button type="submit">Authorize</button>
+                    <button type="submit">Login &amp; Approve</button>
                 </form>
                 <div id="errorMessage" class="error-message">
                     Invalid login credentials. Please try again.
@@ -424,7 +424,11 @@
                     }, function (err, server_json) {
                         app_main_context.last_token_whoami_result = server_json;
                         if (!err) {
-                            app_enter_approval_mode(server_json.stdout.login_name);
+                            if (server_json.error) {
+                                app_enter_login_mode();
+                            } else {
+                                app_enter_approval_mode(server_json.stdout.login_name);
+                            }
                         } else {
                             app_enter_login_mode();
                         };

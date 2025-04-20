@@ -25,11 +25,21 @@ import * as OTPAuth from "otpauth";
 let express_gateway = express();
 // express_gateway.use(bodyParser.urlencoded()); // Not needed when we use JSON only?
 
+// express_gateway.set('trust proxy', true);
+
+// well-known discovery
+express_gateway.use((req, res, next) => {
+    if (req.url.startsWith('/.well-known/openid-configuration')) {
+        req.url = req.url.replace('/.well-known/openid-configuration', '/oidc/.well-known/openid-configuration');
+    };
+    next();
+});
 
 // Allow CORS on some endpoints
+express_gateway.use('/.well-known/openid-configuration', cors());
 express_gateway.use('/oidc/.well-known/openid-configuration', cors());
 express_gateway.use('/oidc/token', cors());
-express_gateway.use('/oidc/userinfo', cors());
+express_gateway.use('/oidc/me', cors());
 
 
 
@@ -203,15 +213,39 @@ class MySuperAdapter {
             // My own logic
             console.log('MySuperAdapter.find(id): ' + id);
             let redir_uri = TmpClientIdMapRedirUriMap['Client:' + id];
-            console.log(`redir_uri = ${redir_uri}`);
-            return {
+            console.log(`(ephemeral?)   redir_uri = ${redir_uri}`);
+
+            // Static client?
+            let query_static = get_config().named_clients.filter(obj => obj.client_id === id);
+            if (query_static.length > 0) {
+                console.log('------------------------------');
+                console.log(`Using static client ${id}`);
+                console.log(query_static[0]);
+                return query_static[0];
+            };
+
+            // // New code: How exactly do I handle non-PKCE clients?
+            // const new_client_metadata = {
+            //     client_id: id,
+            //     client_name: 'PublicClient',
+            //     redirect_uris: [redir_uri],
+            //     response_types: ['id_token', 'code', 'code id_token'],
+            //     grant_types: ['authorization_code', 'implicit'],
+            //     token_endpoint_auth_method: 'client_secret_basic', // Bearer token?
+            // };
+            // return new oidc.Client(new_client_metadata);
+
+            // Old code: Every client is a new PublicClient
+            const new_client_metadata = {
                 client_id: id,
                 client_name: 'PublicClient',
                 redirect_uris: [redir_uri],
-                response_types: ['id_token', 'code'],
+                response_types: ['code id_token', 'id_token', 'code'],
                 grant_types: ['authorization_code', 'implicit'],
                 token_endpoint_auth_method: 'none', // public client
             };
+            console.log(new_client_metadata);
+            return new_client_metadata;
         };
         return storage.get(this.key(id));
     }
@@ -233,6 +267,9 @@ class MySuperAdapter {
             storage.set(sessionUidKeyFor(payload.uid), id, expiresIn * 1000);
             console.log(`Adapter.upsert : Session : id=${id} (payload=${payload}) expiresIn=${expiresIn}`);
             kill_session(id);
+        }
+        if (this.model === 'Interaction') {
+            console.log(`Adapter.upsert : Interaction : id=${id} (payload=${payload}) expiresIn=${expiresIn}`);
         }
 
         const { grantId, userCode } = payload;
@@ -278,13 +315,26 @@ class MySuperAdapter {
 
 
 
+function find_user_in_config(login_email) {
+    // Old code: Find in totp secrets
+    // if (!get_config().totp_secrets.hasOwnProperty(accountId)) {
+    //     return false;
+    // };
 
+    // New code: Find in users array
+    let filtered_arr = get_config().users.filter((obj) => obj.email === login_email);
+    if (filtered_arr.length === 0) {
+        return false;
+    };
+    return filtered_arr[0];
+};
 
 
 // Example config copied from lib with some modifications
 const oidc = new Provider(get_config().site_hostname + '/oidc', {
     async findAccount(ctx, accountId, token) {
-        if (!get_config().totp_secrets.hasOwnProperty(accountId)) {
+        let query_record = find_user_in_config(accountId);
+        if (!query_record) {
             return false;
         };
         return {
@@ -297,16 +347,18 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
                     result.email_verified = true;
                 };
                 if (scope.includes('profile')) {
-                    result.name = accountId;
+                    result.name = query_record.name;
                     result.preferred_username = accountId.split('@')[0];
                 };
                 return result;
             },
         };
     },
+    clients: get_config().named_clients,
     clientDefaults: {
-        response_types: ['code', 'id_token'],
+        response_types: ['code id_token', 'code', 'id_token'],
         grant_types: ['authorization_code', 'implicit'],
+        token_endpoint_auth_method: 'client_secret_basic',
     },
     claims: {
         openid: ['sub'],
@@ -324,10 +376,16 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
     //         return interaction_url;
     //     }
     // },
-    proxy: true,
-    pkce: { required: false }, // Enforce PKCE for all?
+    // proxy: true,
+    pkce: {
+        // PKCE is not mandatory, but gets error when not using PKCE. Why????
+        required: function () {
+            return false;
+        },
+    },
     features: {
         devInteractions: { enabled: true }, // or false if you provide your own UI
+        userinfo: { enabled: true },
         clientCredentials: { enabled: false },
         introspection: { enabled: false },
         revocation: { enabled: false },
@@ -336,6 +394,7 @@ const oidc = new Provider(get_config().site_hostname + '/oidc', {
     jwks: JSON.parse(fs.readFileSync(AuthMatterStartupConfig.jwt_keystore_path).toString()), // JWT keystore loaded here?????
     adapter: MySuperAdapter,
 });
+oidc.proxy = true;
 
 
 
@@ -346,7 +405,8 @@ function handleClientAuthErrors(ctx, error) {
     // console.log(ctx.request);
     // console.log(ctx.request.header);
 }
-// oidc.on("authorization.accepted", handleClientAuthErrors);
+oidc.on("authorization.accepted", handleClientAuthErrors);
+oidc.on("registration_create.error", handleClientAuthErrors);
 oidc.on("authorization.error", handleClientAuthErrors);
 
 
@@ -403,9 +463,14 @@ express_gateway.use('/oidc/auth', (req, res, next) => {
         // console.log('Intercepted auth request:', req.query);
         console.log('req.query.client_id:', req.query.client_id);
         console.log('req.query.redirect_uri:', req.query.redirect_uri);
-
-        // On-demand ephemeral registration?
-        TmpClientIdMapRedirUriMap['Client:' + req.query.client_id] = req.query.redirect_uri;
+        
+        if (get_config().named_clients.filter(obj => obj.client_id === req.query.client_id).length === 0) {
+            // On-demand ephemeral registration
+            console.log('// On-demand ephemeral registration');
+            TmpClientIdMapRedirUriMap['Client:' + req.query.client_id] = req.query.redirect_uri;
+            console.log('req.headers');
+            console.log(req.headers);
+        }
     }
     // Continue to OIDC provider
     next();
@@ -552,7 +617,7 @@ const RealCommands = {
         let query_record = TmpAmt1TokenStorage.find_token(argv.token);
         if (!query_record) {
             end_res_with_json(res, {
-                err: 1,
+                error: 1,
                 stderr: 'Invalid token',
                 stdout: {}
             });
@@ -560,7 +625,7 @@ const RealCommands = {
         };
         query_record.refreshed_at = Date.now();
         end_res_with_json(res, {
-            err: 0,
+            error: 0,
             stderr: '',
             stdout: {
                 login_name: query_record.account_id,
@@ -575,7 +640,7 @@ const RealCommands = {
         let new_token = crypto.randomUUID();
         TmpAmt1TokenStorage.insert(new_token, argv.login_name, Date.now());
         end_res_with_json(res, {
-            err: 0,
+            error: 0,
             stderr: '',
             stdout: { new_token }
         });
@@ -631,10 +696,10 @@ const RealCommands = {
             // If credential is valid, the user will be redirected to consent page
             // let redirectTo = await oidc.interactionResult(req, res, result); // Original way
             let redirectTo = await interactionResult_alt(interaction, result); // Alternative way
-            if (!false) { // Config?
-                redirectTo = redirectTo.replace(/^http/, 'https');
-            };
-            console.log(`[redirectTo]`);
+            // if (!false) { // Config?
+            //     redirectTo = redirectTo.replace(/^http:/, 'https:');
+            // };
+            console.log(`[redirectTo] (alt...)`);
             console.log(redirectTo);
 
             // Authenticated successfully!
@@ -661,7 +726,7 @@ const RealCommands = {
         let query_record = TmpAmt1TokenStorage.find_token(argv.token);
         if (!query_record) {
             end_res_with_json(res, {
-                err: 1,
+                error: 1,
                 stderr: 'Invalid token',
                 stdout: {}
             });
@@ -714,9 +779,9 @@ const RealCommands = {
             // let redirectTo = await oidc.interactionResult(req, res, result); // Original way
             let redirectTo = await interactionResult_alt(interaction, result); // Alternative way
             if (!false) { // Config?
-                redirectTo = redirectTo.replace(/^http/, 'https');
+                redirectTo = redirectTo.replace(/^http:/, 'https:');
             };
-            console.log(`[redirectTo]`);
+            console.log(`[redirectTo] (line 784)`);
             console.log(redirectTo);
 
             // Authenticated successfully!
@@ -744,7 +809,7 @@ const RealCommands = {
     // User namespace
     // 'user.revoke_token': function (argv, safe_env, req, res) {
     //     end_res_with_json(res, {
-    //         err: 0,
+    //         error: 0,
     //         stderr: '',
     //         stdout: {
     //             msg: 'Server does not disclose token revocation operation results. Feel safe.'
@@ -774,14 +839,24 @@ const RealCommands = {
 
 const BusinessLogicHelpers = {
     load_user_totp_secret: function (login_name) {
-        if (!get_config().totp_secrets.hasOwnProperty(login_name)) {
+        let query_record = find_user_in_config(login_name);
+        if (!query_record) {
             return { err: 'no_user' };
-        }
+        };
         return {
             err: 0,
-            secret: get_config().totp_secrets[login_name]
+            secret: query_record.totp_secret
         };
     },
+    // load_user_totp_secret_old: function (login_name) { // Deprecated
+    //     if (!get_config().totp_secrets.hasOwnProperty(login_name)) {
+    //         return { err: 'no_user' };
+    //     }
+    //     return {
+    //         err: 0,
+    //         secret: get_config().totp_secrets[login_name]
+    //     };
+    // },
     check_is_admin: function (uid) {
         if (!BusinessLogicHelpers.check_is_good_standing_user(uid)) {
             return false;
@@ -853,7 +928,8 @@ const TmpInteractionMap = {};
 const TmpLoginResultMap = {};
 async function get_login_result(interaction, simple_credentials) {
     // User not found?
-    if (!get_config().totp_secrets.hasOwnProperty(simple_credentials.email)) {
+    let query_record = find_user_in_config(simple_credentials.email);
+    if (!query_record) {
         return {
             error: 'invalid_user',
             error_description: `No such user ${simple_credentials.email}`,

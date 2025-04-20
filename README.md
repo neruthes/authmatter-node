@@ -8,12 +8,13 @@ SSO IdP peering with OIDC.
 
 ## Features
 
-- [x] OIDC Provider (OP) compatibility.
+- [ ] Instance peering and user roaming
+- [x] OIDC Provider (OP)
 - [x] TOTP user authentication
-- [ ] OIDC Consumer (RP) compatibility.
-- [ ] Web UI management
-- [x] Static user data in configuration file.
-- [ ] Dynamic user data in SQLite.
+- [x] Persistent user token
+- [x] Static user data in configuration file
+- [ ] Dynamic user data in SQLite
+- [ ] Web UI data management
 
 
 
