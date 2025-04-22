@@ -20,5 +20,25 @@ per_peer_users_limit_public = 100       # For public peers
 per_peer_users_limit_favored = 1000     # For whitelisted peers
 
 
-[totp_secrets]
-"admin@localhost" = "FT5L2SKQKJGTU5GB4NP67N33EF3FHZX3"
+
+
+[[users]]
+name = "admin"
+email = "admin@localhost"
+totp_secret = "FT5L2SKQKJGTU5GB4NP67N33EF3FHZX3"
+
+
+
+
+
+[[named_clients]]
+client_id = "memos.nekostein.com"
+client_secret = "[redacted]"
+redirect_uris = [
+    "https://memos.nekostein.com/auth/callback",
+    "http://10.0.233.127:5230/auth/callback",
+    "http://memos-lan.nekostein.com/auth/callback"
+]
+response_types = [ "code" ]
+grant_types = [ "authorization_code" ]
+token_endpoint_auth_method = "client_secret_basic"
